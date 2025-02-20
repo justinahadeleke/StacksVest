@@ -79,3 +79,101 @@
     (ok true)
   )
 )
+
+;; Calculate vested amount for a participant
+(define-read-only (get-vested-amount (participant principal))
+  (let (
+    (schedule (unwrap! (map-get? vesting-schedules participant) ERR_NO_VESTING_SCHEDULE))
+    (current-block block-height)
+    (vesting-start (+ (get start-block schedule) (get cliff-duration schedule)))
+    (vesting-end (+ (get start-block schedule) (get vesting-duration schedule)))
+  )
+    (if (>= current-block vesting-end)
+      (ok (get total-allocation schedule))
+      (if (< current-block vesting-start)
+        (ok u0)
+        (let (
+          (vested-periods (/ (- current-block vesting-start) (get vesting-interval schedule)))
+          (vesting-ratio (/ (* vested-periods (get vesting-interval schedule)) (get vesting-duration schedule)))
+        )
+          (ok (/ (* (get total-allocation schedule) vesting-ratio) u100))
+        )
+      )
+    )
+  )
+)
+
+;; Claim vested tokens
+(define-public (claim-vested-tokens)
+  (let (
+    (participant tx-sender)
+    (schedule (unwrap! (map-get? vesting-schedules participant) ERR_NO_VESTING_SCHEDULE))
+    (vested-amount (unwrap! (get-vested-amount participant) ERR_INVALID_PARAMETER))
+    (claimable-amount (- vested-amount (get amount-claimed schedule)))
+  )
+    (asserts! (> claimable-amount u0) ERR_INSUFFICIENT_BALANCE)
+    (map-set vesting-schedules participant 
+      (merge schedule { amount-claimed: vested-amount })
+    )
+    (map-set token-balances participant 
+      (+ (default-to u0 (map-get? token-balances participant)) claimable-amount)
+    )
+    (ok claimable-amount)
+  )
+)
+
+;; Get balance of a participant
+(define-read-only (get-balance (account principal))
+  (ok (default-to u0 (map-get? token-balances account)))
+)
+
+;; Transfer tokens (only for claimed tokens)
+(define-public (transfer (amount uint) (recipient principal))
+  (let (
+    (sender tx-sender)
+    (sender-balance (unwrap! (get-balance sender) ERR_INVALID_PARAMETER))
+  )
+    (asserts! (and (not (is-eq sender recipient)) (not (is-eq recipient (as-contract tx-sender)))) ERR_INVALID_RECIPIENT)
+    (asserts! (>= sender-balance amount) ERR_INSUFFICIENT_BALANCE)
+    (try! (as-contract (transfer-tokens sender recipient amount)))
+    (ok true)
+  )
+)
+
+(define-private (transfer-tokens (sender principal) (recipient principal) (amount uint))
+  (begin
+    (map-set token-balances sender (- (unwrap! (get-balance sender) ERR_INVALID_PARAMETER) amount))
+    (map-set token-balances recipient (+ (unwrap! (get-balance recipient) ERR_INVALID_PARAMETER) amount))
+    (ok true)
+  )
+)
+
+;; Get total supply
+(define-read-only (get-total-supply)
+  (ok (var-get total-supply))
+)
+
+;; Get token name
+(define-read-only (get-name)
+  (ok (var-get token-name))
+)
+
+;; Get token symbol
+(define-read-only (get-symbol)
+  (ok (var-get token-symbol))
+)
+
+;; Get token decimals
+(define-read-only (get-decimals)
+  (ok (var-get token-decimals))
+)
+
+;; Get vesting schedule for a participant
+(define-read-only (get-vesting-schedule (participant principal))
+  (ok (map-get? vesting-schedules participant))
+)
+
+;; Check if the contract is initialized
+(define-read-only (is-initialized)
+  (ok (var-get contract-initialized))
+)
